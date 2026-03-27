@@ -1,71 +1,93 @@
-use std::cmp::max;
 use std::sync::Arc;
 
-use wgpu::include_spirv_raw;
+use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::{
     GpuContext,
     buffer::GpuBuffer,
-    object::{ColoredObject, TexturedObject},
+    object::{ColoredObject, GPUTransform, Renderable},
     vertex::Vertex,
 };
-
-const INITIAL_BUFFER_SIZE: u64 = 256;
-
-fn reallocate_buffer(gpu: &GpuContext, buffer: &mut wgpu::Buffer, data: &[u8]) {
-    let new_size = max(
-        data.len().next_power_of_two() as u64,
-        (buffer.size() + 1).next_power_of_two(),
-    );
-    let buffer_usage = buffer.usage();
-    *buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: new_size,
-        usage: buffer_usage,
-        mapped_at_creation: false,
-    });
-    gpu.queue.write_buffer(buffer, 0, data);
-}
 
 pub struct Scene {
     //for colored vertices only
     pub static_vertices: Vec<Vertex>,
     pub indices: Vec<u16>,
-    pub transformation_matrices: Vec<glam::Mat4>,
+    static_vb: GpuBuffer,
+    static_ib: GpuBuffer,
+    static_transform_buffer: wgpu::Buffer,
+
+    pub renderables: Vec<Renderable>,
+    renderables_vb: GpuBuffer,
+    renderables_ib: GpuBuffer,
+    next_vertex_offset: u32,
+    instance_buffer: GpuBuffer,
 
     pub textures: Vec<wgpu::Texture>,
-
-    pub vertex_buffer: GpuBuffer,
-    pub index_buffer: GpuBuffer,
 
     gpu: Arc<GpuContext>,
 }
 
 impl Scene {
     pub fn new(gpu: Arc<GpuContext>) -> Self {
-        Self {
+        let ret = Self {
             static_vertices: Vec::new(),
             indices: Vec::new(),
-            transformation_matrices: Vec::new(),
             textures: Vec::new(),
-            vertex_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
-            index_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::INDEX),
+            static_vb: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
+            static_ib: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::INDEX),
+            static_transform_buffer: gpu.device.create_buffer_init(&BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&[GPUTransform::from(glam::Affine2::IDENTITY)]),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            renderables: Vec::new(),
+            renderables_vb: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
+            renderables_ib: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::INDEX),
+            instance_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
+            next_vertex_offset: 0,
             gpu,
+        };
+        ret
+    }
+
+    pub fn add_static_object(
+        &mut self,
+        new_vertices: &[Vertex],
+        new_indices: &[u16],
+    ) -> ColoredObject {
+        let start_index = self.indices.len() as u32;
+        self.static_vertices.extend_from_slice(new_vertices);
+        self.static_vb.append(bytemuck::cast_slice(new_vertices));
+
+        self.indices.extend_from_slice(new_indices);
+        self.static_ib.append(bytemuck::cast_slice(new_indices));
+        ColoredObject {
+            start_index,
+            num_indices: new_indices.len() as u32,
         }
     }
 
-    pub fn add_object(&mut self, new_vertices: &[Vertex], new_indices: &[u16]) -> ColoredObject {
-        let start_index = self.indices.len() as u32;
-        self.static_vertices.extend_from_slice(new_vertices);
-        self.vertex_buffer
-            .append(bytemuck::cast_slice(new_vertices));
+    pub fn create_renderable(&mut self, mesh: &[Vertex], indices: &[u16]) -> &Renderable {
+        let new_renderable = Renderable {
+            vertex_offset: self.renderables_ib.bytes_used as u32 / size_of::<Vertex>() as u32,
+            index_offset: self.renderables_ib.bytes_used as u32 / size_of::<u16>() as u32,
+            num_indices: indices.len() as u32,
+            transformations: Vec::new(),
+        };
+        self.renderables_vb.append(bytemuck::cast_slice(mesh));
+        self.renderables_ib.append(indices);
+        self.renderables.push(new_renderable);
+        self.renderables.last().unwrap()
+    }
 
-        self.indices.extend_from_slice(new_indices);
-        self.index_buffer.append(bytemuck::cast_slice(new_indices));
-        ColoredObject {
-            start_index,
-            num_indices: new_indices.len() as u16,
-            transformation_index: 0,
-        }
+    pub fn render(&self, render_pass: &mut wgpu::RenderPass) {
+        //draw static geometry first
+        render_pass.set_vertex_buffer(0, self.static_vb.buffer.slice(..));
+        render_pass.set_vertex_buffer(1, self.static_transform_buffer.slice(..));
+        render_pass.set_index_buffer(self.static_ib.buffer.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.draw_indexed(0..(self.static_ib.bytes_used / 2) as u32, 0, 0..1);
+
+        //draw each renderable
     }
 }

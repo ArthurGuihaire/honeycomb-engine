@@ -1,5 +1,5 @@
-use std::num::{NonZero, NonZeroU64};
-use wgpu::{BufferUsages, COPY_BUFFER_ALIGNMENT};
+use std::num::NonZeroU64;
+use wgpu::COPY_BUFFER_ALIGNMENT;
 
 use crate::GpuContext;
 use std::cmp::max;
@@ -42,7 +42,14 @@ impl GpuBuffer {
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.copy_buffer_to_buffer(&self.buffer, 0, &new_buffer, 0, self.bytes_used);
+        //alignment rules yay, need to round up to 4 bytes
+        encoder.copy_buffer_to_buffer(
+            &self.buffer,
+            0,
+            &new_buffer,
+            0,
+            self.bytes_used.next_multiple_of(4),
+        );
         let command_buffer = encoder.finish();
         self.gpu.queue.submit(std::iter::once(command_buffer));
         self.buffer = new_buffer;
@@ -86,6 +93,7 @@ impl GpuBuffer {
             //also we need to save last 2 bytes since next write is also guaranteed to be misaligned
             self.last_index = data_u16[data_u16.len() - 1]; //u16 actually convenient for this
         }
+        self.bytes_used += data.len() as u64;
         //We just leave buffer alone and it gets written to gpu... eventually???
         //I mean clearly it works
     }

@@ -1,10 +1,12 @@
-use crate::{object::ColoredObject, scene::Scene, utils::SurfaceError, vertex::Vertex};
+use crate::{
+    object::{ColoredObject, GPUTransform},
+    scene::Scene,
+    utils::SurfaceError,
+    vertex::Vertex,
+};
 use std::sync::Arc;
 use winit::{
-    application::ApplicationHandler,
-    event::*,
     event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
     window::Window,
 };
 
@@ -97,12 +99,12 @@ impl Renderer {
             });
         let basic_render_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Basic render pipeline"),
+                label: Some("Render pipeline"),
                 layout: Some(&basic_render_pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &basic_shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[Vertex::desc()],
+                    buffers: &[Vertex::desc(), GPUTransform::desc()],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -154,14 +156,14 @@ impl Renderer {
         self.scenes.len() - 1
     }
 
-    pub fn add_object(
+    pub fn add_static_object(
         &mut self,
         scene: usize,
         vertices: &[Vertex],
         indices: &[u16],
     ) -> ColoredObject {
         let scene_obj = &mut self.scenes[scene];
-        scene_obj.add_object(vertices, indices)
+        scene_obj.add_static_object(vertices, indices)
     }
 
     pub fn render(&self) -> Result<(), utils::SurfaceError> {
@@ -201,7 +203,7 @@ impl Renderer {
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.0,
-                            g: 0.2,
+                            g: 0.0,
                             b: 0.0,
                             a: 1.0,
                         }),
@@ -217,11 +219,7 @@ impl Renderer {
                 None => println!("Warning: no scene selected"),
                 Some(scene_index) => {
                     let scene = &self.scenes[scene_index];
-                    render_pass.set_vertex_buffer(0, scene.vertex_buffer.buffer.slice(..));
-                    render_pass.set_index_buffer(
-                        scene.index_buffer.buffer.slice(..),
-                        wgpu::IndexFormat::Uint16,
-                    );
+                    scene.render(&mut render_pass);
                     render_pass.draw_indexed(0..scene.indices.len() as u32, 0, 0..1);
                 }
             }
