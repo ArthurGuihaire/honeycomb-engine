@@ -1,3 +1,4 @@
+use crate::object::Material;
 use std::sync::Arc;
 
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
@@ -17,11 +18,7 @@ pub struct Scene {
     static_ib: GpuBuffer,
     static_transform_buffer: wgpu::Buffer,
 
-    pub renderables: Vec<Renderable>,
-    renderables_vb: GpuBuffer,
-    renderables_ib: GpuBuffer,
-    next_vertex_offset: u32,
-    instance_buffer: GpuBuffer,
+    pub materials: Vec<Material>,
 
     pub textures: Vec<wgpu::Texture>,
 
@@ -38,14 +35,10 @@ impl Scene {
             static_ib: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::INDEX),
             static_transform_buffer: gpu.device.create_buffer_init(&BufferInitDescriptor {
                 label: None,
-                contents: bytemuck::cast_slice(&[GPUTransform::from(glam::Affine2::IDENTITY)]),
+                contents: bytemuck::cast_slice(&[GPUTransform::from(&glam::Affine2::IDENTITY)]),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
-            renderables: Vec::new(),
-            renderables_vb: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
-            renderables_ib: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::INDEX),
-            instance_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
-            next_vertex_offset: 0,
+            materials: Vec::new(),
             gpu,
         };
         ret
@@ -66,19 +59,6 @@ impl Scene {
             start_index,
             num_indices: new_indices.len() as u32,
         }
-    }
-
-    pub fn create_renderable(&mut self, mesh: &[Vertex], indices: &[u16]) -> &Renderable {
-        let new_renderable = Renderable {
-            vertex_offset: self.renderables_ib.bytes_used as u32 / size_of::<Vertex>() as u32,
-            index_offset: self.renderables_ib.bytes_used as u32 / size_of::<u16>() as u32,
-            num_indices: indices.len() as u32,
-            transformations: Vec::new(),
-        };
-        self.renderables_vb.append(bytemuck::cast_slice(mesh));
-        self.renderables_ib.append(indices);
-        self.renderables.push(new_renderable);
-        self.renderables.last().unwrap()
     }
 
     pub fn render(&self, render_pass: &mut wgpu::RenderPass) {

@@ -31,8 +31,10 @@ pub struct Renderer {
     gpu: Arc<GpuContext>,
     config: wgpu::SurfaceConfiguration,
     basic_render_pipeline: wgpu::RenderPipeline,
-    //disable texture pipeline for now
-    // texture_render_pipeline: wgpu::RenderPipeline,
+
+    texture_render_pipeline: wgpu::RenderPipeline,
+    texture_bind_group_layout: wgpu::BindGroupLayout,
+
     scenes: Vec<Scene>,
     active_scene: Option<usize>,
     surface: wgpu::Surface<'static>,
@@ -40,11 +42,13 @@ pub struct Renderer {
 
 impl Renderer {
     pub async fn new(event_loop: &ActiveEventLoop) -> Self {
+        //Window creation
         let window_attributes = Window::default_attributes();
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         window.set_visible(true);
         window.request_redraw();
 
+        //Instance
         let size = window.inner_size();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
@@ -56,9 +60,10 @@ impl Renderer {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         });
-        //TODO: move some processing in-between to minimize waiting
+
         let adapter = eventual_adapter.await.unwrap();
 
+        //Device and queue creation
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -75,9 +80,11 @@ impl Renderer {
         let surface_format = surface_caps
             .formats
             .iter()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())
             .copied()
             .unwrap_or(surface_caps.formats[0]);
+
+        println!("Chosen format: {:?}", surface_format);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
@@ -89,49 +96,102 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
 
+        //Basic shader initialization
         let basic_shader =
             device.create_shader_module(wgpu::include_wgsl!("../shaders/basic.wgsl"));
-        let basic_render_pipeline_layout =
+        let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Basic render pipeline layout"),
                 bind_group_layouts: &[],
                 push_constant_ranges: &[],
             });
+
+        //Shared states between render pipelines
+        let vertex_state = wgpu::VertexState {
+            module: &basic_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[Vertex::desc(), GPUTransform::desc()],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        };
+        let fragment_state = Some(wgpu::FragmentState {
+            module: &basic_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: config.format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        });
+        let primitive_state = wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        };
+        let multisample_state = wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        };
         let basic_render_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Render pipeline"),
-                layout: Some(&basic_render_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &basic_shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[Vertex::desc(), GPUTransform::desc()],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &basic_shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format,
-                        blend: Some(wgpu::BlendState::REPLACE),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    unclipped_depth: false,
-                    conservative: false,
-                },
+                label: Some("basic pipeline"),
+                layout: Some(&render_pipeline_layout),
+                vertex: vertex_state.clone(),
+                fragment: fragment_state.clone(),
+                primitive: primitive_state,
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState {
-                    count: 1,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
+                multisample: multisample_state,
+                multiview: None,
+                cache: None,
+            });
+
+        let texture_shader =
+            device.create_shader_module(wgpu::include_wgsl!("../shaders/texture.wgsl"));
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("texture bind group layout"),
+                //Slot 0 is texture, slot 1 is sampler
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let texture_render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("texture pipeline"),
+                bind_group_layouts: &[&texture_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let texture_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("texture pipeline"),
+                layout: Some(&texture_render_pipeline_layout),
+                vertex: vertex_state,
+                fragment: fragment_state,
+                primitive: primitive_state,
+                depth_stencil: None,
+                multisample: multisample_state,
                 multiview: None,
                 cache: None,
             });
@@ -145,6 +205,8 @@ impl Renderer {
             is_surface_configured: false,
             window,
             basic_render_pipeline,
+            texture_bind_group_layout,
+            texture_render_pipeline,
             scenes: Vec::new(),
             active_scene: None,
         }

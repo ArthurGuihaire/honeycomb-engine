@@ -20,7 +20,13 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     return out;
 }
 
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    return pow(c, vec3<f32>(2.2));
+}
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
+    //no srgb conversion? maybe? who knows
+    //let linear = srgb_to_linear(in.color);
+    //return vec4(linear, 1.0);
+    return vec4(in.color, 1.0);
 }

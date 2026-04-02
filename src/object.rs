@@ -1,13 +1,17 @@
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
+use image::{self, ImageReader, codecs::hdr::SIGNATURE, imageops::FilterType::Triangle};
+use std::sync::Arc;
+use wgpu::{naga::keywords::wgsl::RESERVED, util::RenderEncoder};
 
-use crate::Vertex;
+use crate::{GpuContext, Vertex, buffer::GpuBuffer};
 
 pub struct Renderable {
     pub vertex_offset: u32,
     pub index_offset: u32,
     pub num_indices: u32,
-    pub transformations: Vec<glam::Affine2>,
+    pub transformations: Vec<GPUTransform>,
+    pub id: u32,
 }
 
 #[repr(C)]
@@ -44,8 +48,8 @@ impl GPUTransform {
     }
 }
 
-impl From<glam::Affine2> for GPUTransform {
-    fn from(src: glam::Affine2) -> Self {
+impl From<&glam::Affine2> for GPUTransform {
+    fn from(src: &glam::Affine2) -> Self {
         let mat = src.matrix2;
         let t = src.translation;
         Self {
@@ -67,11 +71,138 @@ pub struct DynamicObject {
     pub transformation_matrix: Vec2,
 }
 
-pub struct TexturedObject<'a> {
-    pub vertices: Vec<Vertex>,
-    pub indices: Vec<u16>,
-    pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
-    pub texture: &'a wgpu::Texture,
-    pub transformation: glam::Mat4,
+pub struct Material {
+    pub bind_group: wgpu::BindGroup,
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub sampler: wgpu::Sampler,
+
+    renderables: Vec<Renderable>,
+    vertex_buffer: GpuBuffer,
+    index_buffer: GpuBuffer,
+    instance_buffer: GpuBuffer,
+    next_vertex_offset: u32,
+}
+
+impl Material {
+    pub fn new(
+        image_path: &str,
+        gpu: &Arc<GpuContext>,
+        bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Result<Self, image::ImageError> {
+        let rgb_image = image::ImageReader::open(image_path)?.decode()?.to_rgba8();
+        let dimensions = rgb_image.dimensions();
+        let texture_size = wgpu::Extent3d {
+            width: dimensions.0,
+            height: dimensions.1,
+            depth_or_array_layers: 1,
+        };
+        let diffuse_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(image_path),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfoBase {
+                texture: &diffuse_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgb_image,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * dimensions.0),
+                rows_per_image: Some(4 * dimensions.1),
+            },
+            texture_size,
+        );
+
+        let diffuse_texture_view =
+            diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let diffuse_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some(image_path),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let diffuse_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&diffuse_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
+                },
+            ],
+        });
+
+        Ok(Self {
+            bind_group: diffuse_bind_group,
+            texture: diffuse_texture,
+            view: diffuse_texture_view,
+            sampler: diffuse_sampler,
+
+            renderables: Vec::new(),
+            vertex_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
+            index_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::INDEX),
+            instance_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
+            next_vertex_offset: 0,
+        })
+    }
+
+    pub fn create_renderable(&mut self, mesh: &[Vertex], indices: &[u16]) -> &Renderable {
+        let new_renderable = Renderable {
+            vertex_offset: self.index_buffer.bytes_used as u32 / size_of::<Vertex>() as u32,
+            index_offset: self.vertex_buffer.bytes_used as u32 / size_of::<u16>() as u32,
+            num_indices: indices.len() as u32,
+            transformations: Vec::new(),
+            id: self.renderables.len() as u32,
+        };
+        self.vertex_buffer.append(bytemuck::cast_slice(mesh));
+        self.index_buffer.append(indices);
+        self.renderables.push(new_renderable);
+        self.renderables.last().unwrap()
+    }
+
+    pub fn add_instance(&mut self, transform: &glam::Affine2, renderable_id: u32) {
+        let renderable = &mut self.renderables[renderable_id as usize];
+        let size = renderable.transformations.len();
+        renderable
+            .transformations
+            .push(GPUTransform::from(transform));
+        self.instance_buffer.append(bytemuck::cast_slice(
+            &renderable.transformations[size..size + 1],
+        ));
+    }
+
+    pub fn render(&self, render_pass: &mut wgpu::RenderPass) {
+        render_pass.set_bind_group(0, Some(&self.bind_group), &[]);
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.buffer.slice(..));
+        render_pass.set_index_buffer(
+            self.index_buffer.buffer.slice(..),
+            wgpu::IndexFormat::Uint16,
+        );
+        for renderable in &self.renderables {
+            render_pass.draw_indexed(
+                renderable.index_offset..(renderable.index_offset + renderable.num_indices),
+                renderable.vertex_offset as i32,
+                0..renderable.transformations.len() as u32,
+            );
+        }
+    }
 }
