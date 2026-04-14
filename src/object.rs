@@ -10,8 +10,7 @@ pub struct Renderable {
     pub vertex_offset: u32,
     pub index_offset: u32,
     pub num_indices: u32,
-    pub transformations: Vec<GPUTransform>,
-    pub id: u32,
+    pub transformations: Vec<GPUTransform>, //each instance gets one transformation
 }
 
 #[repr(C)]
@@ -75,7 +74,6 @@ pub struct Material {
     pub bind_group: wgpu::BindGroup,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
-    pub sampler: wgpu::Sampler,
 
     renderables: Vec<Renderable>,
     vertex_buffer: GpuBuffer,
@@ -89,6 +87,7 @@ impl Material {
         image_path: &str,
         gpu: &Arc<GpuContext>,
         bind_group_layout: &wgpu::BindGroupLayout,
+        diffuse_sampler: &wgpu::Sampler,
     ) -> Result<Self, image::ImageError> {
         let rgb_image = image::ImageReader::open(image_path)?.decode()?.to_rgba8();
         let dimensions = rgb_image.dimensions();
@@ -125,16 +124,6 @@ impl Material {
 
         let diffuse_texture_view =
             diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let diffuse_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some(image_path),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
 
         let diffuse_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -146,7 +135,7 @@ impl Material {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
+                    resource: wgpu::BindingResource::Sampler(diffuse_sampler),
                 },
             ],
         });
@@ -155,7 +144,6 @@ impl Material {
             bind_group: diffuse_bind_group,
             texture: diffuse_texture,
             view: diffuse_texture_view,
-            sampler: diffuse_sampler,
 
             renderables: Vec::new(),
             vertex_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
@@ -171,7 +159,6 @@ impl Material {
             index_offset: self.vertex_buffer.bytes_used as u32 / size_of::<u16>() as u32,
             num_indices: indices.len() as u32,
             transformations: Vec::new(),
-            id: self.renderables.len() as u32,
         };
         self.vertex_buffer.append(bytemuck::cast_slice(mesh));
         self.index_buffer.append(indices);

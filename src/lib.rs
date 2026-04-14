@@ -4,7 +4,11 @@ use crate::{
     utils::SurfaceError,
     vertex::Vertex,
 };
-use std::sync::Arc;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+use std::{process::exit, sync::Arc};
 use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::Window,
@@ -38,6 +42,8 @@ pub struct Renderer {
     scenes: Vec<Scene>,
     active_scene: Option<usize>,
     surface: wgpu::Surface<'static>,
+
+    asset_root: PathBuf,
 }
 
 impl Renderer {
@@ -107,22 +113,6 @@ impl Renderer {
             });
 
         //Shared states between render pipelines
-        let vertex_state = wgpu::VertexState {
-            module: &basic_shader,
-            entry_point: Some("vs_main"),
-            buffers: &[Vertex::desc(), GPUTransform::desc()],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        };
-        let fragment_state = Some(wgpu::FragmentState {
-            module: &basic_shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: config.format,
-                blend: Some(wgpu::BlendState::REPLACE),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        });
         let primitive_state = wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
@@ -141,8 +131,22 @@ impl Renderer {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("basic pipeline"),
                 layout: Some(&render_pipeline_layout),
-                vertex: vertex_state.clone(),
-                fragment: fragment_state.clone(),
+                vertex: wgpu::VertexState {
+                    module: &basic_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Vertex::desc(), GPUTransform::desc()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &basic_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
                 primitive: primitive_state,
                 depth_stencil: None,
                 multisample: multisample_state,
@@ -187,8 +191,22 @@ impl Renderer {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("texture pipeline"),
                 layout: Some(&texture_render_pipeline_layout),
-                vertex: vertex_state,
-                fragment: fragment_state,
+                vertex: wgpu::VertexState {
+                    module: &texture_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Vertex::desc(), GPUTransform::desc()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &texture_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
                 primitive: primitive_state,
                 depth_stencil: None,
                 multisample: multisample_state,
@@ -197,6 +215,22 @@ impl Renderer {
             });
 
         let gpu = Arc::new(GpuContext { device, queue });
+
+        //really annoying path parsing stuff
+        let asset_root = {
+            if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+                //Running from cargo crate so use cargo path
+                let mut path = PathBuf::from(manifest_dir);
+                path.push("resources");
+                path
+            } else {
+                //running from executable so get root manually
+                let mut exe_path = std::env::current_exe().expect("Error: failed to get exe path");
+                exe_path.pop();
+                exe_path.push("resources");
+                exe_path
+            }
+        };
 
         Self {
             surface,
@@ -209,6 +243,7 @@ impl Renderer {
             texture_render_pipeline,
             scenes: Vec::new(),
             active_scene: None,
+            asset_root,
         }
     }
 
@@ -226,6 +261,17 @@ impl Renderer {
     ) -> ColoredObject {
         let scene_obj = &mut self.scenes[scene];
         scene_obj.add_static_object(vertices, indices)
+    }
+
+    //use weird generic to allow passing by string or by std::path::Path
+    pub fn add_scene_material<T: AsRef<std::path::Path>>(
+        &mut self,
+        scene: usize,
+        texture_image_path: T,
+    ) {
+        let path = self.asset_root.join(texture_image_path);
+        println!("{}", path.display());
+        self.scenes[scene].add_material(&path.to_string_lossy(), &self.texture_bind_group_layout);
     }
 
     pub fn render(&self) -> Result<(), utils::SurfaceError> {

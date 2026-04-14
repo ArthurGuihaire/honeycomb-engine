@@ -1,7 +1,10 @@
 use crate::object::Material;
 use std::sync::Arc;
 
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
+use wgpu::{
+    BindGroupLayout,
+    util::{BufferInitDescriptor, DeviceExt},
+};
 
 use crate::{
     GpuContext,
@@ -19,18 +22,26 @@ pub struct Scene {
     static_transform_buffer: wgpu::Buffer,
 
     pub materials: Vec<Material>,
-
-    pub textures: Vec<wgpu::Texture>,
+    sampler: wgpu::Sampler,
 
     gpu: Arc<GpuContext>,
 }
 
 impl Scene {
     pub fn new(gpu: Arc<GpuContext>) -> Self {
+        let diffuse_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: None,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
         let ret = Self {
             static_vertices: Vec::new(),
             indices: Vec::new(),
-            textures: Vec::new(),
             static_vb: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
             static_ib: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::INDEX),
             static_transform_buffer: gpu.device.create_buffer_init(&BufferInitDescriptor {
@@ -39,6 +50,7 @@ impl Scene {
                 usage: wgpu::BufferUsages::VERTEX,
             }),
             materials: Vec::new(),
+            sampler: diffuse_sampler,
             gpu,
         };
         ret
@@ -59,6 +71,18 @@ impl Scene {
             start_index,
             num_indices: new_indices.len() as u32,
         }
+    }
+
+    pub fn add_material(&mut self, image_path: &str, bind_group_layout: &BindGroupLayout) {
+        let maybe_material = Material::new(image_path, &self.gpu, bind_group_layout, &self.sampler);
+        let material = match maybe_material {
+            Ok(material) => material,
+            Err(e) => {
+                eprintln!("Error: failed to load material: {}", e);
+                return;
+            }
+        };
+        self.materials.push(material);
     }
 
     pub fn render(&self, render_pass: &mut wgpu::RenderPass) {
