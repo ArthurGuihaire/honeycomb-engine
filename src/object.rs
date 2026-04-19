@@ -1,62 +1,14 @@
-use bytemuck::{Pod, Zeroable};
-use glam::Vec2;
-use image::{self, ImageReader, codecs::hdr::SIGNATURE, imageops::FilterType::Triangle};
+use crate::GPUTransform;
+use image;
 use std::sync::Arc;
-use wgpu::{naga::keywords::wgsl::RESERVED, util::RenderEncoder};
 
-use crate::{GpuContext, Vertex, buffer::GpuBuffer};
+use crate::{GpuContext, buffer::GpuBuffer, vertex::TextureVertex};
 
-pub struct Renderable {
+pub struct Mesh {
     pub vertex_offset: u32,
     pub index_offset: u32,
     pub num_indices: u32,
     pub transformations: Vec<GPUTransform>, //each instance gets one transformation
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-pub struct GPUTransform {
-    col0: [f32; 2],
-    col1: [f32; 2],
-    translation: [f32; 2],
-}
-
-impl GPUTransform {
-    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 0,
-                    shader_location: 2,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: size_of::<Vec2>() as u64,
-                    shader_location: 3,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 2 * size_of::<Vec2>() as u64,
-                    shader_location: 4,
-                },
-            ],
-        }
-    }
-}
-
-impl From<&glam::Affine2> for GPUTransform {
-    fn from(src: &glam::Affine2) -> Self {
-        let mat = src.matrix2;
-        let t = src.translation;
-        Self {
-            col0: mat.col(0).into(),
-            col1: mat.col(1).into(),
-            translation: t.into(),
-        }
-    }
 }
 
 pub struct ColoredObject {
@@ -64,31 +16,24 @@ pub struct ColoredObject {
     pub num_indices: u32,
 }
 
-pub struct DynamicObject {
-    pub start_index: u32,
-    pub num_indices: u32,
-    pub transformation_matrix: Vec2,
-}
-
 pub struct Material {
     pub bind_group: wgpu::BindGroup,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
 
-    renderables: Vec<Renderable>,
+    meshes: Vec<Mesh>,
     vertex_buffer: GpuBuffer,
     index_buffer: GpuBuffer,
     instance_buffer: GpuBuffer,
-    next_vertex_offset: u32,
 }
 
 impl Material {
-    pub fn new(
+    pub(crate) fn new(
         image_path: &str,
         gpu: &Arc<GpuContext>,
         bind_group_layout: &wgpu::BindGroupLayout,
         diffuse_sampler: &wgpu::Sampler,
-    ) -> Result<Self, image::ImageError> {
+    ) -> Result<Material, image::ImageError> {
         let rgb_image = image::ImageReader::open(image_path)?.decode()?.to_rgba8();
         let dimensions = rgb_image.dimensions();
         let texture_size = wgpu::Extent3d {
@@ -103,7 +48,7 @@ impl Material {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         gpu.queue.write_texture(
@@ -145,29 +90,28 @@ impl Material {
             texture: diffuse_texture,
             view: diffuse_texture_view,
 
-            renderables: Vec::new(),
+            meshes: Vec::new(),
             vertex_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
             index_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::INDEX),
             instance_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
-            next_vertex_offset: 0,
         })
     }
 
-    pub fn create_renderable(&mut self, mesh: &[Vertex], indices: &[u16]) -> &Renderable {
-        let new_renderable = Renderable {
-            vertex_offset: self.index_buffer.bytes_used as u32 / size_of::<Vertex>() as u32,
+    pub fn create_renderable(&mut self, mesh: &[TextureVertex], indices: &[u16]) -> usize {
+        let new_renderable = Mesh {
+            vertex_offset: self.index_buffer.bytes_used as u32 / size_of::<TextureVertex>() as u32,
             index_offset: self.vertex_buffer.bytes_used as u32 / size_of::<u16>() as u32,
             num_indices: indices.len() as u32,
             transformations: Vec::new(),
         };
         self.vertex_buffer.append(bytemuck::cast_slice(mesh));
         self.index_buffer.append(indices);
-        self.renderables.push(new_renderable);
-        self.renderables.last().unwrap()
+        self.meshes.push(new_renderable);
+        self.meshes.len() - 1
     }
 
-    pub fn add_instance(&mut self, transform: &glam::Affine2, renderable_id: u32) {
-        let renderable = &mut self.renderables[renderable_id as usize];
+    pub fn add_instance(&mut self, transform: &glam::Affine2, renderable: usize) {
+        let renderable = &mut self.meshes[renderable];
         let size = renderable.transformations.len();
         renderable
             .transformations
@@ -184,7 +128,7 @@ impl Material {
             self.index_buffer.buffer.slice(..),
             wgpu::IndexFormat::Uint16,
         );
-        for renderable in &self.renderables {
+        for renderable in &self.meshes {
             render_pass.draw_indexed(
                 renderable.index_offset..(renderable.index_offset + renderable.num_indices),
                 renderable.vertex_offset as i32,

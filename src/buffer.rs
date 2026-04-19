@@ -1,5 +1,5 @@
 use std::num::NonZeroU64;
-use wgpu::COPY_BUFFER_ALIGNMENT;
+use wgpu::{COPY_BUFFER_ALIGNMENT, QueueWriteBufferView};
 
 use crate::GpuContext;
 use std::cmp::max;
@@ -77,24 +77,33 @@ impl GpuBuffer {
             )
             .unwrap();
 
+        //this shit is so bad
         if alignment_start == 0 {
-            temp_buffer[0..data.len()].copy_from_slice(data);
+            temp_buffer.slice(0..data.len()).copy_from_slice(data);
         } else {
             let temp_slice = self.last_index.to_ne_bytes(); //get first 2 bytes from last misaligned write
-            temp_buffer[0..2].copy_from_slice(&temp_slice);
-            temp_buffer[2..].copy_from_slice(data); //rest of the buffer can be copied from data
+            temp_buffer.slice(0..2).copy_from_slice(&temp_slice);
+            temp_buffer.slice(2..).copy_from_slice(data); //rest of the buffer can be copied from data
         }
 
         if alignment_end != 0 {
             //yay more shenanigans
             const RANDOM_BUFFER: [u8; 2] = [67, 67];
             let misaligned_index = alignment_start as usize + data.len();
-            temp_buffer[misaligned_index..misaligned_index + 2].copy_from_slice(&RANDOM_BUFFER);
+            temp_buffer
+                .slice(misaligned_index..misaligned_index + 2)
+                .copy_from_slice(&RANDOM_BUFFER);
             //also we need to save last 2 bytes since next write is also guaranteed to be misaligned
             self.last_index = data_u16[data_u16.len() - 1]; //u16 actually convenient for this
         }
         self.bytes_used += data.len() as u64;
         //We just leave buffer alone and it gets written to gpu... eventually???
         //I mean clearly it works
+    }
+    pub fn update_aligned(&mut self, offset: u32, new_data: &[u32]) {
+        let data_u8: &[u8] = bytemuck::cast_slice(new_data);
+        self.gpu
+            .queue
+            .write_buffer(&self.buffer, offset as u64, data_u8);
     }
 }

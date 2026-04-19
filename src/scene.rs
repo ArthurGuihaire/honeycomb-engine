@@ -6,12 +6,7 @@ use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
 };
 
-use crate::{
-    GpuContext,
-    buffer::GpuBuffer,
-    object::{ColoredObject, GPUTransform, Renderable},
-    vertex::Vertex,
-};
+use crate::{GPUTransform, GpuContext, buffer::GpuBuffer, object::ColoredObject, vertex::Vertex};
 
 pub struct Scene {
     //for colored vertices only
@@ -28,7 +23,7 @@ pub struct Scene {
 }
 
 impl Scene {
-    pub fn new(gpu: Arc<GpuContext>) -> Self {
+    pub(crate) fn new(gpu: Arc<GpuContext>) -> Self {
         let diffuse_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
             label: None,
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -36,7 +31,7 @@ impl Scene {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         let ret = Self {
@@ -73,25 +68,29 @@ impl Scene {
         }
     }
 
-    pub fn add_material(&mut self, image_path: &str, bind_group_layout: &BindGroupLayout) {
+    pub fn add_material(&mut self, image_path: &str, bind_group_layout: &BindGroupLayout) -> usize {
         let maybe_material = Material::new(image_path, &self.gpu, bind_group_layout, &self.sampler);
         let material = match maybe_material {
             Ok(material) => material,
             Err(e) => {
                 eprintln!("Error: failed to load material: {}", e);
-                return;
+                return 0;
             }
         };
         self.materials.push(material);
+        return self.materials.len() - 1;
     }
 
-    pub fn render(&self, render_pass: &mut wgpu::RenderPass) {
-        //draw static geometry first
+    pub fn render_static(&self, render_pass: &mut wgpu::RenderPass) {
+        //draw static geometry firs-> &Renderable t
         render_pass.set_vertex_buffer(0, self.static_vb.buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.static_transform_buffer.slice(..));
         render_pass.set_index_buffer(self.static_ib.buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..(self.static_ib.bytes_used / 2) as u32, 0, 0..1);
-
-        //draw each renderable
+    }
+    pub fn render_materials(&self, render_pass: &mut wgpu::RenderPass) {
+        for material in &self.materials {
+            material.render(render_pass);
+        }
     }
 }

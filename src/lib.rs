@@ -1,14 +1,13 @@
 use crate::{
-    object::{ColoredObject, GPUTransform},
+    object::ColoredObject,
     scene::Scene,
     utils::SurfaceError,
-    vertex::Vertex,
+    vertex::{GPUTransform, TextureVertex, Vertex},
 };
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
-use std::{process::exit, sync::Arc};
+use glam::{Affine2, Vec2, vec2};
+use std::path::PathBuf;
+use std::{num::NonZeroU64, sync::Arc};
+use wgpu::util::DeviceExt;
 use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::Window,
@@ -34,13 +33,18 @@ pub struct Renderer {
     pub is_surface_configured: bool,
     gpu: Arc<GpuContext>,
     config: wgpu::SurfaceConfiguration,
-    basic_render_pipeline: wgpu::RenderPipeline,
 
+    basic_render_pipeline: wgpu::RenderPipeline,
     texture_render_pipeline: wgpu::RenderPipeline,
+
     texture_bind_group_layout: wgpu::BindGroupLayout,
 
-    scenes: Vec<Scene>,
-    active_scene: Option<usize>,
+    camera_transform: GPUTransform,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+
+    pub scenes: Vec<Scene>,
+    pub active_scene: Option<usize>,
     surface: wgpu::Surface<'static>,
 
     asset_root: PathBuf,
@@ -56,9 +60,12 @@ impl Renderer {
 
         //Instance
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
-            ..Default::default()
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
         });
         let surface = instance.create_surface(window.clone()).unwrap();
         let eventual_adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -86,7 +93,7 @@ impl Renderer {
         let surface_format = surface_caps
             .formats
             .iter()
-            .find(|f| !f.is_srgb())
+            .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
@@ -102,14 +109,30 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
 
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                //Slot 0 is texture, slot 1 is sampler
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
         //Basic shader initialization
         let basic_shader =
             device.create_shader_module(wgpu::include_wgsl!("../shaders/basic.wgsl"));
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Basic render pipeline layout"),
-                bind_group_layouts: &[],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&uniform_bind_group_layout)],
+                immediate_size: 0,
             });
 
         //Shared states between render pipelines
@@ -150,7 +173,7 @@ impl Renderer {
                 primitive: primitive_state,
                 depth_stencil: None,
                 multisample: multisample_state,
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
 
@@ -180,11 +203,36 @@ impl Renderer {
                 ],
             });
 
+        let camera_transform = GPUTransform::from(&glam::Affine2::IDENTITY);
+        // let camera_transform = GPUTransform::from(&glam::Affine2::from_translation(vec2(0.5, 0.5)));
+
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("uniform buffer init descriptor"),
+            contents: bytemuck::cast_slice(&[camera_transform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform_buffer,
+                    offset: 0,
+                    size: NonZeroU64::new(size_of::<GPUTransform>() as u64),
+                }),
+            }],
+        });
+
         let texture_render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("texture pipeline"),
-                bind_group_layouts: &[&texture_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[
+                    Some(&texture_bind_group_layout),
+                    Some(&uniform_bind_group_layout),
+                ],
+                immediate_size: 0,
             });
 
         let texture_render_pipeline =
@@ -194,7 +242,7 @@ impl Renderer {
                 vertex: wgpu::VertexState {
                     module: &texture_shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[Vertex::desc(), GPUTransform::desc()],
+                    buffers: &[TextureVertex::desc(), GPUTransform::desc()],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -210,7 +258,7 @@ impl Renderer {
                 primitive: primitive_state,
                 depth_stencil: None,
                 multisample: multisample_state,
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
 
@@ -241,6 +289,9 @@ impl Renderer {
             basic_render_pipeline,
             texture_bind_group_layout,
             texture_render_pipeline,
+            camera_transform,
+            uniform_buffer,
+            uniform_bind_group,
             scenes: Vec::new(),
             active_scene: None,
             asset_root,
@@ -268,10 +319,30 @@ impl Renderer {
         &mut self,
         scene: usize,
         texture_image_path: T,
-    ) {
+    ) -> usize {
         let path = self.asset_root.join(texture_image_path);
         println!("{}", path.display());
-        self.scenes[scene].add_material(&path.to_string_lossy(), &self.texture_bind_group_layout);
+        self.scenes[scene].add_material(&path.to_string_lossy(), &self.texture_bind_group_layout)
+    }
+
+    pub fn add_scene_object(
+        &mut self,
+        scene: usize,
+        material: usize,
+        vertices: &[TextureVertex],
+        indices: &[u16],
+    ) -> usize {
+        self.scenes[scene].materials[material].create_renderable(vertices, indices)
+    }
+
+    pub fn add_object_instance(
+        &mut self,
+        scene: usize,
+        material: usize,
+        renderable: usize,
+        transform: &Affine2,
+    ) {
+        self.scenes[scene].materials[material].add_instance(transform, renderable);
     }
 
     pub fn render(&self) -> Result<(), utils::SurfaceError> {
@@ -282,17 +353,26 @@ impl Renderer {
 
         let output_maybe = self.surface.get_current_texture();
         let output = match output_maybe {
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                return Err(SurfaceError::Outdated);
+            wgpu::CurrentSurfaceTexture::Success(surface) => surface,
+            wgpu::CurrentSurfaceTexture::Suboptimal(surface) => {
+                println!("suboptimal surface returned whatever that means");
+                surface
             }
-            Err(wgpu::SurfaceError::OutOfMemory) => {
-                return Err(SurfaceError::OutOfMemory);
-            }
-            Err(e) => {
-                return Err(SurfaceError::Other(e));
-            }
-            Ok(texture) => texture,
+            wgpu::CurrentSurfaceTexture::Timeout => return Err(SurfaceError::Timeout),
+            wgpu::CurrentSurfaceTexture::Lost => return Err(SurfaceError::Lost),
+            wgpu::CurrentSurfaceTexture::Occluded => return Err(SurfaceError::Occluded),
+            wgpu::CurrentSurfaceTexture::Validation => return Err(SurfaceError::Validation),
+            wgpu::CurrentSurfaceTexture::Outdated => return Err(SurfaceError::Outdated),
         };
+
+        let scene = match self.active_scene {
+            None => {
+                println!("Warning: no scene selected, skipping rendering");
+                return Ok(());
+            }
+            Some(scene_index) => &self.scenes[scene_index],
+        };
+
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -303,7 +383,7 @@ impl Renderer {
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("basic render pass"),
+                label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -321,16 +401,16 @@ impl Renderer {
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
+
             render_pass.set_pipeline(&self.basic_render_pipeline);
-            match self.active_scene {
-                None => println!("Warning: no scene selected"),
-                Some(scene_index) => {
-                    let scene = &self.scenes[scene_index];
-                    scene.render(&mut render_pass);
-                    render_pass.draw_indexed(0..scene.indices.len() as u32, 0, 0..1);
-                }
-            }
+            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            scene.render_static(&mut render_pass);
+
+            render_pass.set_pipeline(&self.texture_render_pipeline);
+            render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
+            scene.render_materials(&mut render_pass);
         }
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -346,5 +426,14 @@ impl Renderer {
         self.config.height = height;
         self.surface.configure(&self.gpu.device, &self.config);
         self.is_surface_configured = true;
+    }
+
+    pub fn move_camera(&mut self, offset: Vec2) {
+        self.camera_transform.move_relative(offset);
+        self.gpu.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_transform]),
+        );
     }
 }
