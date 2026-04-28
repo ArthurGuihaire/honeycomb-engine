@@ -1,4 +1,5 @@
 use crate::GPUTransform;
+use glam::Vec2;
 use image;
 use std::sync::Arc;
 
@@ -16,12 +17,19 @@ pub struct ColoredObject {
     pub num_indices: u32,
 }
 
+pub struct Object {
+    pub scene: u16,
+    pub material: u16,
+    pub mesh: u16,
+    pub index: u16,
+}
+
 pub struct Material {
     pub bind_group: wgpu::BindGroup,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
 
-    meshes: Vec<Mesh>,
+    pub meshes: Vec<Mesh>,
     vertex_buffer: GpuBuffer,
     index_buffer: GpuBuffer,
     instance_buffer: GpuBuffer,
@@ -121,9 +129,18 @@ impl Material {
         ));
     }
 
+    pub fn move_object_relative(&mut self, mesh: usize, object: usize, offset: Vec2) {
+        self.meshes[mesh].transformations[object].move_relative(offset);
+        self.instance_buffer.update_aligned(
+            (object * size_of::<GPUTransform>()) as u32,
+            bytemuck::cast_slice(&[self.meshes[mesh].transformations[object]]),
+        );
+    }
+
     pub fn render(&self, render_pass: &mut wgpu::RenderPass) {
         render_pass.set_bind_group(0, Some(&self.bind_group), &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.buffer.slice(..));
+        render_pass.set_vertex_buffer(1, self.instance_buffer.buffer.slice(..));
         render_pass.set_index_buffer(
             self.index_buffer.buffer.slice(..),
             wgpu::IndexFormat::Uint16,

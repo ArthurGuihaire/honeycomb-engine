@@ -34,7 +34,7 @@ impl GPUTransform {
         }
     }
 
-    pub fn move_relative(&mut self, offset: glam::Vec2) {
+    pub fn move_relative(&mut self, offset: Vec2) {
         self.translation[0] += offset.x;
         self.translation[1] += offset.y;
     }

@@ -1,10 +1,10 @@
 use crate::{
-    object::ColoredObject,
+    object::{ColoredObject, Object},
     scene::Scene,
     utils::SurfaceError,
     vertex::{GPUTransform, TextureVertex, Vertex},
 };
-use glam::{Affine2, Vec2, vec2};
+use glam::{Affine2, Vec2};
 use std::path::PathBuf;
 use std::{num::NonZeroU64, sync::Arc};
 use wgpu::util::DeviceExt;
@@ -14,7 +14,7 @@ use winit::{
 };
 
 mod buffer;
-pub mod object;
+mod object;
 mod scene;
 pub mod utils;
 pub mod vertex;
@@ -61,7 +61,7 @@ impl Renderer {
         //Instance
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
+            backends: wgpu::Backends::PRIMARY,
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
@@ -339,10 +339,13 @@ impl Renderer {
         &mut self,
         scene: usize,
         material: usize,
-        renderable: usize,
+        mesh: usize,
         transform: &Affine2,
-    ) {
-        self.scenes[scene].materials[material].add_instance(transform, renderable);
+    ) -> usize {
+        let material_ref = &mut self.scenes[scene].materials[material];
+        material_ref.add_instance(transform, mesh);
+        // Object { scene: scene as u16, material: material as u16, mesh: mesh as u16, index: material_ref.meshes.len() as u16 - 1 }
+        material_ref.meshes[mesh].transformations.len() - 1
     }
 
     pub fn render(&self) -> Result<(), utils::SurfaceError> {
@@ -429,11 +432,28 @@ impl Renderer {
     }
 
     pub fn move_camera(&mut self, offset: Vec2) {
-        self.camera_transform.move_relative(offset);
+        self.camera_transform.move_relative(-offset);
         self.gpu.queue.write_buffer(
             &self.uniform_buffer,
             0,
             bytemuck::cast_slice(&[self.camera_transform]),
         );
     }
+
+    pub fn move_object(&mut self, material: usize, mesh: usize, object: usize, offset: Vec2) {
+        let material = &mut self.scenes[self.active_scene.unwrap()].materials[material];
+        material.move_object_relative(mesh, object, offset);
+    }
+
+    //Maybe too much complexity? ignore for now
+    // pub fn move_object(&mut)
+
+    // pub fn get_object(&self, material: usize, mesh: usize, instance_index: usize) -> Object {
+    //     Object {
+    //         scene: self.active_scene.unwrap() as u16,
+    //         material: material as u16,
+    //         mesh: mesh as u16,
+    //         index: instance_index as u16,
+    //     }
+    // }
 }
