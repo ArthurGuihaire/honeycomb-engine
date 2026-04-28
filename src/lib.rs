@@ -1,7 +1,7 @@
 use crate::{
     object::{ColoredObject, Object},
     scene::Scene,
-    utils::SurfaceError,
+    utils::{SurfaceError, try_create_surface},
     vertex::{GPUTransform, TextureVertex, Vertex},
 };
 use glam::{Affine2, Vec2};
@@ -60,14 +60,7 @@ impl Renderer {
 
         //Instance
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            flags: wgpu::InstanceFlags::default(),
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            backend_options: wgpu::BackendOptions::default(),
-            display: None,
-        });
-        let surface = instance.create_surface(window.clone()).unwrap();
+        let (instance, surface) = try_create_surface(window.clone());
         let eventual_adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: Some(&surface),
