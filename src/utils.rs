@@ -23,7 +23,15 @@ pub fn try_create_surface(
     match surface_hopefully {
         Err(e) => {
             eprint!("failed to create surface: {e}");
-            exit(1)
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::GL,
+                flags: wgpu::InstanceFlags::default(),
+                memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+                backend_options: wgpu::BackendOptions::default(),
+                display: None,
+            });
+            let surface = instance.create_surface(window.clone()).unwrap();
+            return (instance, surface);
         }
         Ok(surface) => (instance, surface),
     }
