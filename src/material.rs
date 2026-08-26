@@ -10,6 +10,7 @@ pub struct Mesh {
     pub index_offset: u32,
     pub num_indices: u32,
     pub transformations: Vec<GPUTransform>, //each instance gets one transformation
+    pub instance_buffer: GpuBuffer,
 }
 
 pub struct ColoredObject {
@@ -17,14 +18,8 @@ pub struct ColoredObject {
     pub num_indices: u32,
 }
 
-pub struct Object {
-    pub scene: u16,
-    pub material: u16,
-    pub mesh: u16,
-    pub index: u16,
-}
-
 pub struct Material {
+    gpu: Arc<GpuContext>,
     pub bind_group: wgpu::BindGroup,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -32,7 +27,6 @@ pub struct Material {
     pub meshes: Vec<Mesh>,
     vertex_buffer: GpuBuffer,
     index_buffer: GpuBuffer,
-    instance_buffer: GpuBuffer,
 }
 
 impl Material {
@@ -94,6 +88,7 @@ impl Material {
         });
 
         Ok(Self {
+            gpu: gpu.clone(),
             bind_group: diffuse_bind_group,
             texture: diffuse_texture,
             view: diffuse_texture_view,
@@ -101,55 +96,53 @@ impl Material {
             meshes: Vec::new(),
             vertex_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
             index_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::INDEX),
-            instance_buffer: GpuBuffer::new(gpu.clone(), wgpu::BufferUsages::VERTEX),
         })
     }
 
-    pub fn create_renderable(&mut self, mesh: &[TextureVertex], indices: &[u16]) -> usize {
-        let new_renderable = Mesh {
+    pub fn create_mesh(&mut self, mesh: &[TextureVertex], indices: &[u16]) -> usize {
+        let new_mesh = Mesh {
             vertex_offset: self.index_buffer.bytes_used as u32 / size_of::<TextureVertex>() as u32,
             index_offset: self.vertex_buffer.bytes_used as u32 / size_of::<u16>() as u32,
             num_indices: indices.len() as u32,
             transformations: Vec::new(),
+            instance_buffer: GpuBuffer::new(self.gpu.clone(), wgpu::BufferUsages::VERTEX),
         };
         self.vertex_buffer.append(bytemuck::cast_slice(mesh));
         self.index_buffer.append(indices);
-        self.meshes.push(new_renderable);
+        self.meshes.push(new_mesh);
         self.meshes.len() - 1
     }
 
-    pub fn add_instance(&mut self, transform: &glam::Affine2, renderable: usize) {
-        let renderable = &mut self.meshes[renderable];
-        let size = renderable.transformations.len();
-        renderable
-            .transformations
-            .push(GPUTransform::from(transform));
-        self.instance_buffer.append(bytemuck::cast_slice(
-            &renderable.transformations[size..size + 1],
-        ));
+    pub fn add_instance(&mut self, transform: &glam::Affine2, mesh: usize) {
+        let mesh = &mut self.meshes[mesh];
+        let size = mesh.transformations.len();
+        mesh.transformations.push(GPUTransform::from(transform));
+        mesh.instance_buffer
+            .append(bytemuck::cast_slice(&mesh.transformations[size..size + 1]));
     }
 
-    pub fn move_object_relative(&mut self, mesh: usize, object: usize, offset: Vec2) {
-        self.meshes[mesh].transformations[object].move_relative(offset);
-        self.instance_buffer.update_aligned(
+    pub fn move_object_absolute(&mut self, mesh: usize, object: usize, position: Vec2) {
+        let mesh = &mut self.meshes[mesh];
+        mesh.transformations[object].move_absolute(position);
+        mesh.instance_buffer.update_aligned(
             (object * size_of::<GPUTransform>()) as u32,
-            bytemuck::cast_slice(&[self.meshes[mesh].transformations[object]]),
+            bytemuck::cast_slice(&[mesh.transformations[object]]),
         );
     }
 
     pub fn render(&self, render_pass: &mut wgpu::RenderPass) {
-        render_pass.set_bind_group(0, Some(&self.bind_group), &[]);
+        render_pass.set_bind_group(1, Some(&self.bind_group), &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.buffer.slice(..));
-        render_pass.set_vertex_buffer(1, self.instance_buffer.buffer.slice(..));
         render_pass.set_index_buffer(
             self.index_buffer.buffer.slice(..),
             wgpu::IndexFormat::Uint16,
         );
-        for renderable in &self.meshes {
+        for mesh in &self.meshes {
+            render_pass.set_vertex_buffer(1, mesh.instance_buffer.buffer.slice(..));
             render_pass.draw_indexed(
-                renderable.index_offset..(renderable.index_offset + renderable.num_indices),
-                renderable.vertex_offset as i32,
-                0..renderable.transformations.len() as u32,
+                mesh.index_offset..(mesh.index_offset + mesh.num_indices),
+                mesh.vertex_offset as i32,
+                0..mesh.transformations.len() as u32,
             );
         }
     }

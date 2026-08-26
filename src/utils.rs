@@ -1,4 +1,3 @@
-use std::process::exit;
 use std::sync::Arc;
 
 pub enum SurfaceError {
@@ -9,6 +8,7 @@ pub enum SurfaceError {
     Validation,
 }
 
+//Safe(r) surface creation
 pub fn try_create_surface(
     window: Arc<winit::window::Window>,
 ) -> (wgpu::Instance, wgpu::Surface<'static>) {
@@ -20,6 +20,7 @@ pub fn try_create_surface(
         display: None,
     });
     let surface_hopefully = instance.create_surface(window.clone());
+    //if we didn't get a surface, try again with OpenGL instead
     match surface_hopefully {
         Err(e) => {
             eprint!("failed to create surface: {e}");

@@ -1,5 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use glam::Vec2;
+use glam::{Mat2, Vec2};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -34,9 +34,27 @@ impl GPUTransform {
         }
     }
 
+    pub fn move_absolute(&mut self, position: Vec2) {
+        self.translation = position.to_array();
+    }
+
     pub fn move_relative(&mut self, offset: Vec2) {
         self.translation[0] += offset.x;
         self.translation[1] += offset.y;
+    }
+
+    pub fn reset_transform(&mut self) {
+        self.col0 = [1.0, 0.0];
+        self.col1 = [0.0, 1.0];
+    }
+
+    pub fn apply_transform(&mut self, transform: &Mat2) {
+        let t_row0 = transform.row(0);
+        let t_row1 = transform.row(1);
+        self.col0[0] = self.col0[0] * t_row0[0] + self.col0[1] * t_row0[1];
+        self.col0[1] = self.col0[0] * t_row1[0] + self.col0[1] * t_row1[1];
+        self.col1[0] = self.col1[0] * t_row0[0] + self.col1[1] * t_row0[1];
+        self.col1[1] = self.col1[0] * t_row1[0] + self.col1[1] * t_row1[1];
     }
 }
 

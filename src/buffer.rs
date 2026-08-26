@@ -1,5 +1,5 @@
 use std::num::NonZeroU64;
-use wgpu::{COPY_BUFFER_ALIGNMENT, QueueWriteBufferView};
+use wgpu::COPY_BUFFER_ALIGNMENT;
 
 use crate::GpuContext;
 use std::cmp::max;
@@ -63,10 +63,12 @@ impl GpuBuffer {
         let alignment_end = (data.len() as u64 + alignment_start) % COPY_BUFFER_ALIGNMENT;
         let write_size = data.len() as u64 + alignment_start + alignment_end;
 
+        //if target size is larger, reallocate
         let new_target_size = write_size + self.bytes_used;
-        if new_target_size < self.buffer.size() {
+        if new_target_size > self.buffer.size() {
             self.reallocate_buffer(new_target_size);
         }
+        //direct write, for alignemnt problems
         let mut temp_buffer = self
             .gpu
             .queue

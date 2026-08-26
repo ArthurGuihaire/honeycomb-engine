@@ -1,4 +1,4 @@
-use crate::object::Material;
+use crate::material::Material;
 use std::sync::Arc;
 
 use wgpu::{
@@ -6,7 +6,7 @@ use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
 };
 
-use crate::{GPUTransform, GpuContext, buffer::GpuBuffer, object::ColoredObject, vertex::Vertex};
+use crate::{GPUTransform, GpuContext, buffer::GpuBuffer, material::ColoredObject, vertex::Vertex};
 
 pub struct Scene {
     //for colored vertices only
@@ -82,7 +82,6 @@ impl Scene {
     }
 
     pub fn render_static(&self, render_pass: &mut wgpu::RenderPass) {
-        //draw static geometry firs-> &Renderable t
         render_pass.set_vertex_buffer(0, self.static_vb.buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.static_transform_buffer.slice(..));
         render_pass.set_index_buffer(self.static_ib.buffer.slice(..), wgpu::IndexFormat::Uint16);
