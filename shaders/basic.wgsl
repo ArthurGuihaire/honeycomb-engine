@@ -19,7 +19,8 @@ var<uniform> camera: AffineTransform;
 fn vs_main(vertex: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     let world_pos = camera.col0 * vertex.position.x + camera.col1 * vertex.position.y;
-    out.clip_position = vec4<f32>(world_pos, 0.0, 1.0);
+    let clip_position = world_pos + camera.translation;
+    out.clip_position = vec4<f32>(clip_position, 0.0, 1.0);
     out.color = vec3<f32>(vertex.color);
     return out;
 }

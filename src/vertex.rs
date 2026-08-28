@@ -6,7 +6,7 @@ use glam::{Mat2, Vec2};
 pub struct GPUTransform {
     col0: [f32; 2],
     col1: [f32; 2],
-    translation: [f32; 2],
+    pub translation: [f32; 2],
 }
 
 impl GPUTransform {

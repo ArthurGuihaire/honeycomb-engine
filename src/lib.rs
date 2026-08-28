@@ -447,38 +447,30 @@ impl Renderer {
         self.surface.configure(&self.gpu.device, &self.config);
         self.is_surface_configured = true;
 
-        self.update_window_size_camera_transform(width, height);
+        // self.update_window_size_camera_transform(width, height);
     }
 
     pub fn move_camera(&mut self, offset: Vec2) {
         self.camera_transform.move_relative(-offset);
-        self.update_camera();
     }
 
-    fn update_window_size_camera_transform(&mut self, width: u32, height: u32) {
+    pub fn set_transform(&mut self, scale: Vec2, angle: f32) {
         self.camera_transform.reset_transform();
-        if width < height {
-            let scale = width as f32 / height as f32;
-            self.apply_scale_transform(Vec2 { x: 1.0, y: scale });
-        } else {
-            let scale = height as f32 / width as f32;
-            self.apply_scale_transform(Vec2 { x: scale, y: 1.0 });
-        }
-        self.update_camera();
-    }
-
-    pub fn apply_scale_transform(&mut self, scale: Vec2) {
-        let transformation_matrix = Mat2::from_scale_angle(scale, 0.0);
+        let transformation_matrix = Mat2::from_scale_angle(scale, angle);
         self.camera_transform
             .apply_transform(&transformation_matrix);
     }
 
-    fn update_camera(&mut self) {
+    pub fn update_camera(&mut self) {
         self.gpu.queue.write_buffer(
             &self.uniform_buffer,
             0,
             bytemuck::cast_slice(&[self.camera_transform]),
         );
+    }
+
+    pub fn camera_position(&self) -> Vec2 {
+        return -Vec2::from_array(self.camera_transform.translation); // camera position is secretly inverted
     }
 
     pub fn move_object(&mut self, material: usize, mesh: usize, object: usize, position: Vec2) {
