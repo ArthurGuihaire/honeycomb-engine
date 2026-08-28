@@ -77,6 +77,12 @@ pub struct Vertex {
 }
 
 impl Vertex {
+    pub fn from_vector(position: &Vec2, color: [f32; 3]) -> Self {
+        Self {
+            position: position.to_array(),
+            color,
+        }
+    }
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
