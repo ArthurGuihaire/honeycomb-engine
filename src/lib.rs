@@ -5,8 +5,8 @@ use crate::{
     vertex::{GPUTransform, TextureVertex, Vertex},
 };
 use glam::{Affine2, Mat2, Vec2};
-use std::path::PathBuf;
 use std::{num::NonZeroU64, sync::Arc};
+use std::{path::PathBuf, sync::Mutex};
 use wgpu::util::DeviceExt;
 use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
@@ -30,7 +30,7 @@ pub struct GpuContext {
 
 pub struct Renderer {
     pub window: Arc<Window>,
-    pub is_surface_configured: bool,
+    pub is_surface_configured: Mutex<bool>, // so render doesn't require mutable reference and can be run asynchronously
     gpu: Arc<GpuContext>,
     config: wgpu::SurfaceConfiguration,
 
@@ -71,6 +71,7 @@ impl Renderer {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         });
 
         let adapter = eventual_adapter.await.unwrap();
@@ -106,6 +107,7 @@ impl Renderer {
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
 
         let uniform_bind_group_layout =
@@ -155,7 +157,7 @@ impl Renderer {
                 vertex: wgpu::VertexState {
                     module: &basic_shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[Vertex::desc()],
+                    buffers: &[Some(Vertex::desc())],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -239,7 +241,7 @@ impl Renderer {
                 vertex: wgpu::VertexState {
                     module: &texture_shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[TextureVertex::desc(), GPUTransform::desc()],
+                    buffers: &[Some(TextureVertex::desc()), Some(GPUTransform::desc())],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -298,7 +300,7 @@ impl Renderer {
             surface,
             gpu,
             config,
-            is_surface_configured: false,
+            is_surface_configured: Mutex::new(false),
             window_width,
             window_height,
             window,
@@ -364,10 +366,12 @@ impl Renderer {
         material_ref.meshes[mesh].transformations.len() - 1
     }
 
-    pub fn render(&mut self) -> Result<(), utils::SurfaceError> {
-        if !self.is_surface_configured {
+    pub fn render(&self) -> Result<(), utils::SurfaceError> {
+        if let Ok(mut surface_configured) = self.is_surface_configured.lock()
+            && !*surface_configured
+        {
             self.surface.configure(&self.gpu.device, &self.config);
-            self.is_surface_configured = true;
+            *surface_configured = true;
         };
 
         // self.apply_camera_transform(Vec2 { x: 1.0, y: 1.0 }, 0.001);
@@ -376,7 +380,9 @@ impl Renderer {
         let output = match output_maybe {
             wgpu::CurrentSurfaceTexture::Success(surface) => surface,
             wgpu::CurrentSurfaceTexture::Suboptimal(surface) => {
-                self.is_surface_configured = false;
+                if let Ok(mut surface_configured) = self.is_surface_configured.lock() {
+                    *surface_configured = false;
+                };
                 surface
             }
             wgpu::CurrentSurfaceTexture::Timeout => return Err(SurfaceError::Timeout),
@@ -434,7 +440,7 @@ impl Renderer {
         }
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        self.gpu.queue.present(output);
 
         self.window.request_redraw();
 
@@ -445,7 +451,9 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.gpu.device, &self.config);
-        self.is_surface_configured = true;
+        if let Ok(mut surface_configured) = self.is_surface_configured.lock() {
+            *surface_configured = true;
+        };
 
         // self.update_window_size_camera_transform(width, height);
     }
